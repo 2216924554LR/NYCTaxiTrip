@@ -1,5 +1,6 @@
 package TaxiTrip
 
+import com.esri.core.geometry.{Geometry, GeometryEngine, Point, SpatialReference}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Dataset, Row, SparkSession}
 import org.junit.Test
@@ -7,6 +8,7 @@ import org.junit.Test
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import scala.io.Source
 
 object TaxiTrip {
 
@@ -39,7 +41,6 @@ object TaxiTrip {
 //    errorRow.collect().foreach(print(_))
 
 
-
     val taxiClean = taxiParsed.map(either => either.left.get).toDS()
 //    taxiClean.show(10)
 
@@ -62,7 +63,71 @@ object TaxiTrip {
 
     spark.udf.register("hours", hours)
     val taxiClean2 = taxiClean.where("hours(pickUpTime, dropOffTime) between 0 and 3")
-    taxiClean2.show(10)
+//    taxiClean2.show(10)
+
+    val geoJson = Source.fromFile("dataset/NYCBorough.geojson").mkString
+    val featureCollection = FeatureExtraction.parseJson(geoJson)
+
+//    sort boroughs by its area
+    val sortedFeatures = featureCollection.features.sortBy(
+      feature => {
+        (feature.properties("boroughCode"), -feature.getGeometry().calculateArea2D())
+      }
+    )
+
+
+
+//    broadcast
+    val featuresBC = spark.sparkContext.broadcast(sortedFeatures)
+
+//    create UDF
+    val boroughLookUp = (x:Double, y:Double) => {
+//      search borough
+      val featureHit: Option[Feature] = featuresBC.value.find(feature => {
+        GeometryEngine.contains(feature.getGeometry(), new Point(x, y), SpatialReference.create(4326))
+      }
+      )
+      val borough = featureHit.map(feature => feature.properties("borough")).getOrElse("NA")
+      borough
+    }
+
+    val boroughUDF = udf(boroughLookUp)
+
+    /**
+     * most popular drop-off place
+     */
+    //    taxiClean2.groupBy(boroughUDF('dropOffX, 'dropOffY))
+//      .count()
+//      .show()
+
+    val sessions = taxiClean2.where("dropOffX != 0 and dropOffY != 0 and pickUpX != 0 and pickUpY != 0")
+      .repartition('id)
+      .sortWithinPartitions('id, 'pickUpTime)
+
+    sessions.show(10)
+
+    def boroughDuration(t1:Trip, t2:Trip): (String, Long) = {
+      val borough = boroughLookUp(t1.dropOffX, t1.dropOffY)
+      val duration = (t2.pickUpTime - t1.dropOffTime) / 1000
+      (borough, duration)
+    }
+//
+    val boroughDuration2 = sessions.mapPartitions(trips => {
+      val duration = trips.sliding(2)
+        .filter(_.size == 2)
+        .filter(p => p.head.id == p.last.id)
+      duration.map(p => boroughDuration(p.head, p.last))
+    }).toDF("borough", "seconds")
+//
+    boroughDuration2.show(20)
+
+//    boroughDuration2.where("seconds > 0")
+//      .groupBy("borough")
+//      .agg(avg('seconds), stddev('seconds))
+//      .show()
+
+
+
 
   }
 
@@ -110,6 +175,9 @@ object TaxiTrip {
     val locationOption = location.map(loc => loc.toDouble)
     locationOption.getOrElse(0.0D)
   }
+
+
+
 }
 
 class RichRow(row: Row){
@@ -135,3 +203,4 @@ case class Trip(
       dropOffX: Double,
       dropOffY: Double
                )
+
