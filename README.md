@@ -11,10 +11,14 @@ The goal of this project is to find the most popular boroug in NYC.
 
 ## environmental dependence
 scalaVersion := "2.11.12"
+
 sparkVersion := "2.4.7"
+
+Other settings are in sbt file.
 
 ## datasource
 taxi data: https://www.kaggle.com/c/nyc-taxi-trip-duration
+
 geometry data: https://github.com/haghard/streams-recipes/blob/master/nyc-borough-boundaries-polygon.geojson
 
 ## usage
